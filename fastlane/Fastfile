@@ -1,0 +1,119 @@
+# This file contains the fastlane.tools configuration
+# You can find the documentation at https://docs.fastlane.tools
+#
+# For a list of all available actions, check out
+#
+#     https://docs.fastlane.tools/actions
+#
+
+require 'fileutils'
+
+default_platform(:android)
+
+platform :android do
+
+desc "This lane will run workflow depending on the branch"
+  lane :run_workflow do |options|
+    current_branch = options[:git_branch]
+
+    case current_branch
+    when /^release/ then
+      UI.message "Running release candidate workflow 🚀"
+      release options
+    when "master" then
+      UI.message "Running release workflow 🚀"
+      test
+      #firebase_app_dist options - todo: configure firebase app id and cli token
+    when "develop" then
+      UI.message "Running tests on all variants"
+      test
+    else
+      build_reason = options[:build_reason]
+      lint
+      test
+    end
+  end
+end
+
+
+desc "Runs lint on all variants of the sdk and app"
+lane :lint do
+  gradle(task: "lint")
+  gradle(task: "buffsdk:lint")
+end
+
+desc "Runs all the jvm tests in the sdk"
+lane :test do
+  gradle(task: "buffsdk:test")
+end
+
+desc "Assembles all build variants and deploy artifacts"
+lane :release do |options|
+  test
+  gradle(task: "buffsdk:publish")
+  upload_artifacts options
+end
+
+########################################
+## Firebase App Distribution
+########################################
+desc "Upload build to Firebase;
+required parameters are flavour, build_type, tester_groups;
+optional parameters is git_branch"
+lane :firebase_app_dist do |options|
+  options[:flavour][0] = options[:flavour][0].downcase
+  options[:build_type][0] = options[:build_type][0].downcase
+
+  version_name = build(options[:flavour], options[:build_type])
+  apk_path = getApkPath(options[:flavour], options[:build_type])
+
+  commit = last_git_commit
+
+  release_notes = getReleaseNotes(version_name, options[:git_branch], options[:flavour], options[:build_type], commit[:message])
+
+  firebase_app_distribution(
+    app: ENV['FIREBASE_APP_ID'],
+    firebase_cli_token: ENV['FIREBASE_CLI_TOKEN'],
+    apk_path: apk_path,
+    release_notes: release_notes,
+    groups: options[:tester_groups]
+  )
+end
+
+########################################
+## Utils
+########################################
+
+def getReleaseNotes(version_name, git_branch, flavour, build_type, commit_message)
+  if (git_branch == nil)
+    git_branch = ""
+  end
+
+  return "Commit: " +  commit_message.lines.first.delete("\n") + "\nFlavour: " + flavour + ", Build type: " + build_type + "\nVersion: " + version_name + "\nBranch: " + git_branch
+end
+
+# Build given APK and returns version name.
+def build(flavour, build_type)
+  output = gradle(
+        task: "assemble",
+        flavor: flavour,
+        build_type: build_type
+  )
+  return output.split("\n").grep(/^Apply version/)[0].split(": ")[1]
+end
+
+def getApkPath(flavour, build_type)
+  return Dir.glob("../**/apk/"+flavour+"/"+build_type+"/*.apk")
+                         .max_by {|f| File.mtime(f)}
+                         .to_s[3..-1]
+end
+
+def getOutputsDir()
+  dirs=Dir.glob("../**/")
+  dirs.each do |path|
+    if path.include? "/build/outputs"
+      outputs_dir = path.slice(/.+?(?=build)build\/outputs/)
+      return outputs_dir
+    end
+  end
+end
