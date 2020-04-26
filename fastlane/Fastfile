@@ -15,7 +15,7 @@ platform :android do
 desc "This lane will run workflow depending on the branch"
   lane :run_workflow do |options|
     current_branch = options[:git_branch]
-
+    UI.message "Branch $current_branch"
     case current_branch
     when /^release/ then
       UI.message "Running release candidate workflow 🚀"
